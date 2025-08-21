@@ -12,6 +12,10 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(express.json());
 app.use(cors());
 
+// ------------------- إعدادات Supabase -------------------
+const SUPABASE_URL = "https://fkjnjiqewakjfggozjxz.supabase.co/rest/v1";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZram5qaXFld2FramZnZ296anh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU0ODQwMDUsImV4cCI6MjA3MTA2MDAwNX0.3p6GCTasy8luARLuCoROJ3BilSzjdOIfLjo7-g0PDBg";
+
 // ------------------- WebSocket لإدارة الدردشة -------------------
 let waitingUsers = [];
 let pairedUsers = {};
@@ -19,6 +23,19 @@ let recentlyLeftPairs = {};
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
+
+  socket.on("register_user", async ({ username, password }) => {
+    try {
+      const res = await axios.post(
+        `${SUPABASE_URL}/users`,
+        { username, password },
+        { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" } }
+      );
+      socket.emit("register_success", res.data);
+    } catch (err) {
+      socket.emit("register_error", err.response?.data || err.message);
+    }
+  });
 
   socket.on("find_partner", () => {
     let partner = waitingUsers.find(u => !(recentlyLeftPairs[`${socket.id}-${u}`] || recentlyLeftPairs[`${u}-${socket.id}`]));
@@ -34,7 +51,7 @@ io.on("connection", (socket) => {
       setTimeout(() => {
         if (waitingUsers.includes(socket.id)) {
           waitingUsers = waitingUsers.filter(u => u !== socket.id);
-          io.to(socket.id).emit("no_partner_found");
+          socket.emit("no_partner_found");
         }
       }, 10000);
     }
@@ -69,68 +86,7 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-});app.get('/api/orders', (req, res) => {
-    const data = readData();
-    res.json(data.orders);
-});
-
-app.post('/api/orders', (req, res) => {
-    const order = req.body;
-    const data = readData();
-    
-    const product = data.products.find(p => p.id === order.productId);
-    if (!product) {
-        return res.status(404).json({ error: 'المنتج غير موجود' });
-    }
-    
-    if ((data.points[order.userEmail] || 0) < (product.price * 1000)) {
-        return res.status(400).json({ error: 'النقاط غير كافية' });
-    }
-    
-    order.id = Date.now().toString();
-    order.date = new Date().toISOString();
-    order.status = product.delivery === 'auto' ? 'completed' : 'pending';
-    order.pointsUsed = product.price * 1000;
-    
-    data.points[order.userEmail] = (data.points[order.userEmail] || 0) - order.pointsUsed;
-    data.orders.push(order);
-    
-    data.transactions.push({
-        type: 'purchase',
-        userEmail: order.userEmail,
-        amount: order.pointsUsed,
-        date: order.date,
-        orderId: order.id
-    });
-    
-    writeData(data);
-    res.json({ success: true, order });
-});
-
-app.put('/api/orders/:id/status', (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body;
-    const data = readData();
-    
-    const orderIndex = data.orders.findIndex(o => o.id === id);
-    if (orderIndex === -1) {
-        return res.status(404).json({ error: 'الطلب غير موجود' });
-    }
-    
-    if (status === 'cancelled' && data.orders[orderIndex].status === 'pending') {
-        const userEmail = data.orders[orderIndex].userEmail;
-        data.points[userEmail] = (data.points[userEmail] || 0) + data.orders[orderIndex].pointsUsed;
-        
-        data.transactions.push({
-            type: 'refund',
-            userEmail,
-            amount: data.orders[orderIndex].pointsUsed,
-            date: new Date().toISOString(),
-            orderId: id
-        });
-    }
-    
-    data.orders[orderIndex].status = status;
+});    data.orders[orderIndex].status = status;
     writeData(data);
     
     res.json({ success: true });
