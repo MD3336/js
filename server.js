@@ -1,105 +1,75 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const fs = require('fs');
-const path = require('path');
-const cors = require('cors');
+// server.js
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const axios = require("axios");
+const cors = require("cors");
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+app.use(express.json());
 app.use(cors());
-app.use(bodyParser.json());
 
-const DATA_FILE = path.join(__dirname, 'db.json');
+// ------------------- WebSocket لإدارة الدردشة -------------------
+let waitingUsers = [];
+let pairedUsers = {};
+let recentlyLeftPairs = {};
 
-// تهيئة ملف البيانات إذا لم يكن موجوداً
-if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({
-        users: [],
-        products: [],
-        orders: [],
-        points: {},
-        transactions: []
-    }, null, 2));
-}
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
 
-// قراءة البيانات من الملف
-function readData() {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-}
+  socket.on("find_partner", () => {
+    let partner = waitingUsers.find(u => !(recentlyLeftPairs[`${socket.id}-${u}`] || recentlyLeftPairs[`${u}-${socket.id}`]));
+    if (partner) {
+      waitingUsers = waitingUsers.filter(u => u !== partner);
+      pairedUsers[socket.id] = partner;
+      pairedUsers[partner] = socket.id;
 
-// كتابة البيانات إلى الملف
-function writeData(data) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-// API Routes
-
-// المستخدمون
-app.post('/api/register', (req, res) => {
-    const { email, password } = req.body;
-    const data = readData();
-    
-    if (data.users.find(u => u.email === email)) {
-        return res.status(400).json({ error: 'البريد الإلكتروني مسجل بالفعل' });
-    }
-    
-    data.users.push({ email, password });
-    data.points[email] = 0;
-    writeData(data);
-    
-    res.json({ success: true });
-});
-
-app.post('/api/login', (req, res) => {
-    const { email, password } = req.body;
-    const data = readData();
-    
-    const user = data.users.find(u => u.email === email && u.password === password);
-    if (!user) {
-        return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
-    }
-    
-    res.json({ 
-        success: true, 
-        user: { email, points: data.points[email] || 0 } 
-    });
-});
-
-// المنتجات
-app.get('/api/products', (req, res) => {
-    const data = readData();
-    res.json(data.products);
-});
-
-app.post('/api/products', (req, res) => {
-    const product = req.body;
-    const data = readData();
-    
-    if (!product.id) {
-        product.id = Date.now().toString();
-        data.products.push(product);
+      io.to(socket.id).emit("partner_found", partner);
+      io.to(partner).emit("partner_found", socket.id);
     } else {
-        const index = data.products.findIndex(p => p.id === product.id);
-        if (index !== -1) {
-            data.products[index] = product;
+      waitingUsers.push(socket.id);
+      setTimeout(() => {
+        if (waitingUsers.includes(socket.id)) {
+          waitingUsers = waitingUsers.filter(u => u !== socket.id);
+          io.to(socket.id).emit("no_partner_found");
         }
+      }, 10000);
     }
-    
-    writeData(data);
-    res.json({ success: true });
+  });
+
+  socket.on("leave_partner", () => {
+    let partner = pairedUsers[socket.id];
+    if (partner) {
+      recentlyLeftPairs[`${socket.id}-${partner}`] = Date.now();
+      setTimeout(() => delete recentlyLeftPairs[`${socket.id}-${partner}`], 5 * 60 * 1000);
+
+      delete pairedUsers[socket.id];
+      delete pairedUsers[partner];
+      io.to(partner).emit("partner_left");
+    }
+  });
+
+  socket.on("send_message", (msg) => {
+    let partner = pairedUsers[socket.id];
+    if (partner) io.to(partner).emit("receive_message", msg);
+  });
+
+  socket.on("disconnect", () => {
+    let partner = pairedUsers[socket.id];
+    if (partner) io.to(partner).emit("partner_left");
+    waitingUsers = waitingUsers.filter(u => u !== socket.id);
+    delete pairedUsers[socket.id];
+  });
 });
 
-app.delete('/api/products/:id', (req, res) => {
-    const { id } = req.params;
-    const data = readData();
-    
-    data.products = data.products.filter(p => p.id !== id);
-    writeData(data);
-    
-    res.json({ success: true });
-});
-
-// الطلبات
-app.get('/api/orders', (req, res) => {
+// ------------------- تشغيل السيرفر -------------------
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});app.get('/api/orders', (req, res) => {
     const data = readData();
     res.json(data.orders);
 });
