@@ -3,7 +3,6 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cron = require('node-cron');
-const pm2 = require('pm2');
 const { createClient } = require('@supabase/supabase-js');
 
 // Supabase
@@ -32,9 +31,6 @@ wss.on('connection', ws => ws.on('message', msg => console.log('WS:', msg)));
 // Cron
 cron.schedule('* * * * *', ()=> console.log('Task running every minute'));
 
-// PM2
-pm2.connect(err => { if(err) console.error(err); pm2.start({script:'bot.js',name:'telegram-bot'}); });
-
 // Supabase helpers
 async function saveUser(userId,name,gender){ await supabase.from('users').upsert({id:userId,name,gender}); }
 async function getUser(userId){ const {data} = await supabase.from('users').select('*').eq('id',userId).single(); return data; }
@@ -46,6 +42,7 @@ async function removeChatPair(userId,partnerId){ await supabase.from('chat_pairs
 async function addReport(reporterId,reportedId,reason,photo=null){ await supabase.from('reports').insert({reporter_id:reporterId,reported_id:reportedId,reason,photo}); }
 async function getReports(){ const {data} = await supabase.from('reports').select('*'); return data||[]; }
 async function clearReports(){ await supabase.from('reports').delete(); }
+async function getAllUsers(){ const {data} = await supabase.from('users').select('*'); return data||[]; }
 
 // Bot
 function runBot(){
@@ -63,6 +60,27 @@ function runBot(){
         }else{
             bot.sendMessage(userId,`مرحبًا ${user.name}!`,{reply_markup:{inline_keyboard:[[ {text:'أبدا بحث',callback_data:'find_chat'}]]}});
         }
+    });
+
+    // Admin panel command
+    bot.onText(/\/admin/, async msg=>{
+        const userId = msg.chat.id;
+        if(!adminIds.includes(userId)) return bot.sendMessage(userId,"ليس لديك إذن");
+
+        const opts = {
+            reply_markup:{
+                inline_keyboard:[
+                    [{text:'عرض المستخدمين',callback_data:'view_users'}],
+                    [{text:'عرض المحظورين',callback_data:'view_banned_users'}],
+                    [{text:'حظر مستخدم',callback_data:'ban_user'}],
+                    [{text:'فك الحظر',callback_data:'unban_user'}],
+                    [{text:'إرسال رسالة جماعية',callback_data:'broadcast_message'}],
+                    [{text:'عرض البلاغات',callback_data:'view_reports'}],
+                    [{text:'مسح البلاغات',callback_data:'clear_reports'}]
+                ]
+            }
+        };
+        bot.sendMessage(userId,"لوحة الإدارة:",opts);
     });
 
     // Message handling
@@ -106,16 +124,70 @@ function runBot(){
         if(partnerId) bot.sendMessage(partnerId, `${(await getUser(userId)).name}: ${msg.text}`);
     });
 
-    // Callback queries
+    // Callback queries for inline keyboard
     bot.on('callback_query', async query=>{
         const userId = query.message.chat.id;
+
         if(query.data==='find_chat') findChat(userId);
         else if(query.data==='leave_chat') leaveChat(userId);
         else if(query.data==='report') { userState[userId]={step:'awaiting_report_reason'}; bot.sendMessage(userId,'أرسل سبب البلاغ'); }
-        else if(query.data==='view_reports') viewReports(userId);
-        else if(query.data==='clear_reports') {await clearReports(); bot.sendMessage(userId,'تم حذف جميع البلاغات');}
+
+        // Admin callbacks
+        else if(query.data==='view_users'){
+            if(!adminIds.includes(userId)) return bot.sendMessage(userId,"ليس لديك إذن");
+            const users = await getAllUsers();
+            let text = "المستخدمين:\n\n";
+            users.forEach(u=>text+=`ID: ${u.id}\nالاسم: ${u.name}\nالجنس: ${u.gender}\n\n`);
+            bot.sendMessage(userId,text);
+        }
+        else if(query.data==='view_banned_users'){
+            if(!adminIds.includes(userId)) return bot.sendMessage(userId,"ليس لديك إذن");
+            const users = await getAllUsers();
+            let text = "المستخدمين المحظورين:\n\n";
+            users.filter(u=>u.banned).forEach(u=>text+=`ID: ${u.id}\nالاسم: ${u.name}\n\n`);
+            bot.sendMessage(userId,text);
+        }
+        else if(query.data==='ban_user'){ userState[userId]={step:'awaiting_ban'}; bot.sendMessage(userId,'أرسل ID المستخدم للحظر'); }
+        else if(query.data==='unban_user'){ userState[userId]={step:'awaiting_unban'}; bot.sendMessage(userId,'أرسل ID المستخدم لفك الحظر'); }
+        else if(query.data==='broadcast_message'){ userState[userId]={step:'awaiting_broadcast'}; bot.sendMessage(userId,'أرسل الرسالة التي تريد إرسالها لجميع المستخدمين'); }
+        else if(query.data==='view_reports'){ viewReports(userId); }
+        else if(query.data==='clear_reports'){ await clearReports(); bot.sendMessage(userId,'تم حذف جميع البلاغات'); }
     });
 
+    // Handle admin text inputs for actions
+    bot.on('message', async msg=>{
+        const userId = msg.chat.id;
+        if(!adminIds.includes(userId)) return;
+
+        const state = userState[userId];
+        if(!state) return;
+
+        if(state.step==='awaiting_ban'){
+            const targetId = parseInt(msg.text);
+            if(!isNaN(targetId)){
+                await banUser(targetId);
+                bot.sendMessage(userId,`تم حظر المستخدم ${targetId}`);
+                bot.sendMessage(targetId,'تم حظرك من قبل المطور');
+            }
+            delete userState[userId];
+        }else if(state.step==='awaiting_unban'){
+            const targetId = parseInt(msg.text);
+            if(!isNaN(targetId)){
+                await unbanUser(targetId);
+                bot.sendMessage(userId,`تم فك حظر المستخدم ${targetId}`);
+                bot.sendMessage(targetId,'تم فك الحظر عنك من قبل المطور');
+            }
+            delete userState[userId];
+        }else if(state.step==='awaiting_broadcast'){
+            const message = msg.text;
+            const users = await getAllUsers();
+            users.filter(u=>!u.banned).forEach(u=>bot.sendMessage(u.id,`رسالة من المطور: ${message}`));
+            bot.sendMessage(userId,'تم إرسال الرسالة للجميع');
+            delete userState[userId];
+        }
+    });
+
+    // Chat pairing functions
     async function findChat(userId){
         if(waitingUsers.includes(userId) || activeUsers.has(userId)) return;
         if(waitingUsers.length>0){
@@ -143,72 +215,36 @@ function runBot(){
         activeUsers.delete(userId);
         activeUsers.delete(partner);
 
-        // إضافة المستخدمين إلى قائمة التجاهل المؤقت
         ignoredUsers.add(userId);
         ignoredUsers.add(partner);
         setTimeout(() => {
             ignoredUsers.delete(userId);
             ignoredUsers.delete(partner);
-        }, 10000); // مدة التجاهل المؤقتة 10 ثواني
+        }, 10000);
 
-        bot.sendMessage(userId, 'لقد غادرت الدردشة 😐', {
-            reply_markup: { inline_keyboard: [[{ text: 'ابحث عن شريك', callback_data: 'find_chat' }]] }
-        });
-        bot.sendMessage(partner, `الشريك غادر الدردشة 😢`, {
-            reply_markup: { inline_keyboard: [[{ text: 'ابحث عن شريك', callback_data: 'find_chat' }]] }
-        });
+        bot.sendMessage(userId, 'لقد غادرت الدردشة 😐', { reply_markup:{ inline_keyboard:[[ {text:'ابحث عن شريك', callback_data:'find_chat'}]]}});
+        bot.sendMessage(partner, `الشريك غادر الدردشة 😢`, { reply_markup:{ inline_keyboard:[[ {text:'ابحث عن شريك', callback_data:'find_chat'}]]}});
     }
 
-    async function viewReports(userId) {
-        if (!adminIds.includes(userId)) return bot.sendMessage(userId, 'ليس لديك صلاحية');
+    async function viewReports(userId){
+        if(!adminIds.includes(userId)) return bot.sendMessage(userId,'ليس لديك إذن');
         const reports = await getReports();
-        if (reports.length === 0) return bot.sendMessage(userId, 'لا يوجد بلاغات');
+        if(reports.length===0) return bot.sendMessage(userId,'لا يوجد بلاغات');
         let text = 'البلاغات:\n\n';
-        for (const r of reports) {
+        for(const r of reports){
             const reporter = await getUser(r.reporter_id);
             const reported = await getUser(r.reported_id);
-            text += `مقدم البلاغ: ${reporter?.name || r.reporter_id}\nالمبلغ عنه: ${reported?.name || r.reported_id}\nالسبب: ${r.reason}\n\n`;
+            text+=`مقدم البلاغ: ${reporter?.name||r.reporter_id}\nالمبلغ عنه: ${reported?.name||r.reported_id}\nالسبب: ${r.reason}\n\n`;
         }
-        bot.sendMessage(userId, text);
+        bot.sendMessage(userId,text);
     }
 
-    // Commands for admins
-    bot.onText(/\/ban (.+)/, async (msg, match) => {
-        const userId = msg.chat.id;
-        if (!adminIds.includes(userId)) return;
-        const targetId = parseInt(match[1]);
-        if (!isNaN(targetId)) {
-            await banUser(targetId);
-            bot.sendMessage(userId, `تم حظر المستخدم ${targetId}`);
-            bot.sendMessage(targetId, 'تم حظرك من قبل المطور');
-        }
-    });
-
-    bot.onText(/\/unban (.+)/, async (msg, match) => {
-        const userId = msg.chat.id;
-        if (!adminIds.includes(userId)) return;
-        const targetId = parseInt(match[1]);
-        if (!isNaN(targetId)) {
-            await unbanUser(targetId);
-            bot.sendMessage(userId, `تم فك حظر المستخدم ${targetId}`);
-            bot.sendMessage(targetId, 'تم فك الحظر عنك من قبل المطور. يمكنك الآن استخدام البوت');
-        }
-    });
-
-    bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-        const userId = msg.chat.id;
-        if (!adminIds.includes(userId)) return;
-        const message = match[1];
-        const { data: users } = await supabase.from('users').select('id').neq('banned', true);
-        users.forEach(u => bot.sendMessage(u.id, `رسالة من المطور: ${message}`));
-    });
-
-    // Periodic check to clean waiting users (optional)
-    setInterval(() => {
-        waitingUsers.forEach((uid, index) => {
-            if (ignoredUsers.has(uid)) waitingUsers.splice(index, 1);
+    // Periodic cleanup for waitingUsers
+    setInterval(()=>{
+        waitingUsers.forEach((uid,index)=>{
+            if(ignoredUsers.has(uid)) waitingUsers.splice(index,1);
         });
-    }, 30000);
+    },30000);
 
 }
 
