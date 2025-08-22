@@ -15,15 +15,13 @@ const bot = new TelegramBot(token); // بدون polling
 // === Express Web Server ===
 const app = express();
 app.use(express.json());
-
-app.get('/', (req, res) => res.send('Bot is running!'));
-
 const PORT = process.env.PORT || 3000;
 const URL = "https://js-m5q0.onrender.com"; // رابط موقعك على Render
 
 // === Webhook ===
 bot.setWebHook(`${URL}/bot${token}`);
 
+app.get('/', (req, res) => res.send('Bot is running!'));
 app.post(`/bot${token}`, (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
