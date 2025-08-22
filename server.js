@@ -10,12 +10,23 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // === إعداد Telegram Bot ===
 const token = "7132216283:AAFD9ABqmpd8juzxX96D3I7HS5eECS_-g2E";
-const bot = new TelegramBot(token, { polling: true });
-
-// === Express Web Server ===
+const bot = new TelegramBot(token);
 const app = express();
-app.get('/', (req, res) => res.send('Bot is running!'));
+app.use(express.json());
+
+// === Webhook Settings ===
 const PORT = process.env.PORT || 3000;
+const URL = "https://js-m5q0.onrender.com"; // ضع رابط Render الخاص بك هنا
+bot.setWebHook(`${URL}/bot${token}`);
+
+// Telegram سيبعث التحديثات هنا
+app.post(`/bot${token}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+});
+
+// صفحة رئيسية
+app.get('/', (req, res) => res.send('Bot is running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // === متغيرات عامة ===
@@ -26,7 +37,7 @@ const ignoredUsers = new Set();
 const activeUsers = new Set();
 const adminIds = [1298076494, 215790261];
 
-// === دوال قاعدة البيانات ===
+// === دوال Supabase ===
 async function isBanned(userId) {
     const { data } = await supabase.from('banned_users').select('*').eq('user_id', userId);
     return data.length > 0;
@@ -151,7 +162,7 @@ bot.on('callback_query', async cb=>{
     }
 });
 
-// === الرسائل ===
+// === رسائل المستخدم ===
 bot.on('message', async msg=>{
     const userId = msg.chat.id;
     const text = msg.text;
