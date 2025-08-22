@@ -46,7 +46,7 @@ async function getAllUsers(){ const {data} = await supabase.from('users').select
 
 // Bot
 function runBot(){
-    const token = "7132216283:AAFD9ABqmpd8juzxX96D3I7HS5eECS_-g2E";
+    const token = "YOUR_TELEGRAM_BOT_TOKEN";
     bot = new TelegramBot(token,{polling:true});
 
     // Start command
@@ -60,6 +60,28 @@ function runBot(){
         }else{
             bot.sendMessage(userId,`مرحبًا ${user.name}!`,{reply_markup:{inline_keyboard:[[ {text:'أبدا بحث',callback_data:'find_chat'}]]}});
         }
+    });
+
+    // Leave command
+    bot.onText(/\/leave/, async msg=>{
+        const userId = msg.chat.id;
+        leaveChat(userId);
+    });
+
+    // Edit command
+    bot.onText(/\/edit/, async msg=>{
+        const userId = msg.chat.id;
+        bot.sendMessage(userId,"أرسل اسمك الجديد:");
+        userState[userId]={step:'edit_name'};
+    });
+
+    // Report command
+    bot.onText(/\/report/, async msg=>{
+        const userId = msg.chat.id;
+        const partnerId = await getPartner(userId);
+        if(!partnerId) return bot.sendMessage(userId,"لا يمكنك الإبلاغ إلا أثناء وجودك في دردشة!");
+        userState[userId]={step:'awaiting_report_reason'};
+        bot.sendMessage(userId,'أرسل سبب البلاغ');
     });
 
     // Admin panel command
@@ -86,7 +108,7 @@ function runBot(){
     // Message handling
     bot.on('message', async msg=>{
         const userId = msg.chat.id;
-        if(msg.text.startsWith('/')) return;
+        if(msg.text?.startsWith('/')) return;
 
         const state=userState[userId];
         if(state){
@@ -98,6 +120,15 @@ function runBot(){
                 if(!['ذكر','أنثى'].includes(msg.text.toLowerCase())) return bot.sendMessage(userId,"من فضلك، أرسل جنسك (ذكر/أنثى):");
                 await saveUser(userId,state.name,msg.text.toLowerCase());
                 bot.sendMessage(userId,`تم التسجيل بنجاح مرحبًا ${state.name}!`);
+                delete userState[userId];
+            }else if(state.step==='edit_name'){
+                state.name=msg.text;
+                bot.sendMessage(userId,"الآن من فضلك أرسل جنسك (ذكر/أنثى):");
+                state.step='edit_gender';
+            }else if(state.step==='edit_gender'){
+                if(!['ذكر','أنثى'].includes(msg.text.toLowerCase())) return bot.sendMessage(userId,"من فضلك، أرسل جنسك (ذكر/أنثى):");
+                await saveUser(userId,state.name,msg.text.toLowerCase());
+                bot.sendMessage(userId,`تم تحديث بياناتك بنجاح ✅`);
                 delete userState[userId];
             }else if(state.step==='awaiting_report_reason'){
                 state.reason=msg.text;
@@ -124,7 +155,7 @@ function runBot(){
         if(partnerId) bot.sendMessage(partnerId, `${(await getUser(userId)).name}: ${msg.text}`);
     });
 
-    // Callback queries for inline keyboard
+    // Callback queries
     bot.on('callback_query', async query=>{
         const userId = query.message.chat.id;
 
@@ -154,11 +185,10 @@ function runBot(){
         else if(query.data==='clear_reports'){ await clearReports(); bot.sendMessage(userId,'تم حذف جميع البلاغات'); }
     });
 
-    // Handle admin text inputs for actions
+    // Handle admin actions
     bot.on('message', async msg=>{
         const userId = msg.chat.id;
         if(!adminIds.includes(userId)) return;
-
         const state = userState[userId];
         if(!state) return;
 
@@ -239,7 +269,7 @@ function runBot(){
         bot.sendMessage(userId,text);
     }
 
-    // Periodic cleanup for waitingUsers
+    // Cleanup waiting list
     setInterval(()=>{
         waitingUsers.forEach((uid,index)=>{
             if(ignoredUsers.has(uid)) waitingUsers.splice(index,1);
